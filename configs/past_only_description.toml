@@ -1,0 +1,13 @@
+# Descriptive averaging/screening only; not a replacement for model inference.
+name = "past_only_descriptive_analysis"
+window_s = 3600
+support = "(t-window,t]"
+timestamp = "completed_block_availability"
+minimum_available_blocks = 1
+restart_gap_s = 1800
+selection_fraction = 0.30
+embargo_s = 3600
+null_resamples = 499
+null_chunk_gap_s = 180
+null_minimum_blocks = 61
+null_minimum_shift_blocks = 30
