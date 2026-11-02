@@ -37,7 +37,7 @@ class WaveEncoderDecoder(nn.Module):
 
 
 class CardioSSM(nn.Module):
-    architecture_version = 'integrated_encoder_mamba2_v1'
+    architecture_version = 'continuous_axis_mamba2_v2'
 
     def __init__(self):
         super().__init__()
@@ -50,7 +50,8 @@ class CardioSSM(nn.Module):
         self.norms = nn.ModuleList([nn.LayerNorm(64) for _ in range(2)])
         self.ssm = nn.ModuleList([
             Mamba2(d_model=64, d_state=32, d_conv=4, expand=2,
-                   headdim=32, chunk_size=64, use_mem_eff_path=False)
+                   headdim=32, chunk_size=64, use_mem_eff_path=False,
+                   ngroups=1, rmsnorm=True, norm_before_gate=False, D_has_hdim=False)
             for _ in range(2)
         ])
         self.dropout = nn.Dropout(0.1)
@@ -76,6 +77,22 @@ class CardioSSM(nn.Module):
         for norm, block in zip(self.norms, self.ssm):
             z = z + self.dropout(block(norm(z)))
         return self.final_norm(z[:, :n])
+
+    def temporal_step(self, token, states=None):
+        """Advance explicit inference state once; never replay it after reading updates."""
+        from ..streaming import mamba2_step
+        if self.training:
+            raise ValueError('streaming inference requires eval mode')
+        if states is None:
+            states = [None]*len(self.ssm)
+        if len(states) != len(self.ssm):
+            raise ValueError('one inference state per residual block required')
+        z, updated = token, []
+        for norm, block, previous in zip(self.norms, self.ssm, states):
+            output, current = mamba2_step(block, norm(z), previous)
+            z = z + output
+            updated.append(current)
+        return self.final_norm(z), updated
 
     def forward(self, waveforms, features, lengths=None, return_all=False,
                 reconstruct=None):

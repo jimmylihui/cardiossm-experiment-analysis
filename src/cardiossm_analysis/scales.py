@@ -2,9 +2,10 @@
 import numpy as np
 from .metrics import pearson
 from .temporal import validate_time
+from .runs import run_slices
 
 
-def scale_metrics(time, reference, prediction, test_mask, scales_s, gap_s=1800.):
+def scale_metrics(time, reference, prediction, test_mask, scales_s, gap_s=1800.,run_id=None):
     """Average prediction and target in the same non-overlapping bins per run.
 
     Use native-resolution observations, not an already 60min-smoothed curve.
@@ -24,13 +25,13 @@ def scale_metrics(time, reference, prediction, test_mask, scales_s, gap_s=1800.)
     if not len(dt):
         raise ValueError("insufficient native observations")
     native = float(np.median(dt))
-    cuts = np.r_[0, np.flatnonzero(np.diff(t) > gap_s) + 1, len(t)]
+    runs=list(run_slices(t,run_id,gap_s))
     rows = []
     for scale in scales_s:
         if not np.isfinite(scale) or scale < native - 1e-6:
             raise ValueError("averaging scale cannot be below native sampling interval")
         yy, pp = [], []
-        for a, b in zip(cuts[:-1], cuts[1:]):
+        for a, b in runs:
             bins = np.floor((t[a:b] - t[a]) / scale).astype(np.int64)
             for key in np.unique(bins[test[a:b]]):
                 ids = np.flatnonzero((bins == key) & test[a:b]) + a

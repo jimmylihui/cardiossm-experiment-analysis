@@ -1,3 +1,5 @@
+# Reference values only, not an executable run configuration. The CLI records
+# effective parameters. See docs/methods-ambiguities.md for required choices.
 initial_calibration_fraction = 0.30
 internal_calibration_train_fraction = 0.80
 calibration_intervals_h = [4, 8, 12, 24]
@@ -12,8 +14,6 @@ initial_fit_epochs = 20
 initial_fit_patience = 5
 initial_fit_learning_rate = 0.0001
 online_steps = 30
-online_memory_samples = 64
-online_replay_samples = 64
 map_loss = "huber_delta1"
 decoder_reconstruction_weight = 0.1
 smoothing = "past_only"
@@ -26,3 +26,16 @@ qa_selection = "other_patient_test_mae"
 monitor_hr_beta = 1.0
 bootstrap_unit = "patient"
 bootstrap_resamples = 10000
+
+[unresolved]
+run_gap_basis = "explicit_choice_required"
+initial_split_unit = "explicit_choice_required"
+online_learning_rate = "explicit_choice_required"
+online_memory_samples = "explicit_choice_required"
+online_replay_samples = "explicit_choice_required"
+online_replay_source = "explicit_choice_required"
+online_sampling = "explicit_choice_required"
+fsnet_batch_size = "explicit_choice_required"
+no_initial_test_scope = "explicit_choice_required"
+bootstrap_aggregation_and_contrast = "explicit_choice_required"
+paired_test_and_holm_family = "explicit_choice_required"

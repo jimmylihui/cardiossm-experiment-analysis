@@ -1,86 +1,143 @@
-# Models and training
+# Models and supervised runners
 
-## Installation
-
-Install compatible PyTorch and torchvision builds, then:
+Install the analysis package and compatible PyTorch/torchvision builds:
 
 ```bash
 python -m pip install -e '.[training]'
-```
-
-CardioSSM also requires Mamba2 on a compatible CUDA system:
-
-```bash
 python -m pip install 'mamba-ssm==2.3.2.post1' --no-build-isolation
 ```
 
-Dependency documentation: [Mamba](https://github.com/state-spaces/mamba/tree/v2.3.2.post1), [torchvision ResNet18](https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.resnet18.html). Dependencies are imported externally; their source and weights are not bundled.
+Native CardioSSM training requires compatible Mamba2/CUDA. Dependencies and
+weights are not bundled. See [protocol ambiguities](methods-ambiguities.md)
+before selecting a study invocation. Configuration TOMLs are reference tables,
+not executable run configurations; changing them does not change a run.
 
-## Input arrays
+## External inputs and support
 
-Supply one external NPZ per subject, containing already preprocessed 10s windows at 100Hz. No sample files are distributed.
+One external NPZ per subject contains `sig` [W,3,1000], `fid` [W,3,42], `map`
+[W], increasing window starts `t` [W], increasing completion times
+`availability_s` [W] (at least t+10), and boolean `retained_mask` [W]. Optional
+`hr_bpm` [W] is monitor HR and is pooled into HRb for estimator assembly.
+FSNet does not need fid and receives three-axis windows. Filtering, waveform
+standardization and template/fiducial extraction are external preprocessing;
+the loader cannot certify them from array shapes.
 
-| Key | Shape | Meaning |
-|---|---|---|
-| `sig` | W × 3 × 1000 | Three-axis BCG windows |
-| `fid` | W × 3 × 42 | Aligned engineered features for CardioSSM and BCGnet |
-| `map` | W | MAP target in mmHg |
-| `t` | W | Strictly increasing window-start times, seconds |
-| `availability_s` | W | Strictly increasing completion times, at least t+10s |
-| `retained_mask` | W | Externally fixed retained support |
-| `reading_indices_4` | R | Four-hour reading positions in retained 2min blocks |
-| `reading_indices_8` | R | Eight-hour reading positions |
-| `reading_indices_12` | R | Twelve-hour reading positions |
-| `reading_indices_24` | R | Twenty-four-hour reading positions |
+Main-cohort pretraining applies retained_mask before stride sampling and
+normalization. Each of the three supplemental recordings instead needs an
+explicit boolean `pretraining_mask`; their total support is checked against
+2339 windows. They are never validation or test patients.
 
-Each retained 2min block requires at least six windows. A block becomes available after its time bin closes and all its windows complete. Reading indices begin at the first test block. They are optional: the loader otherwise generates elapsed-hour schedules, maps each scheduled time to the next retained block and removes duplicate positions. Supplied indices are checked against that rule. Preprocessing includes the waveform filtering, window standardization and feature extraction described in Methods; this loader consumes those prepared inputs. FSNet consumes the three-axis waveform and does not require `fid`.
+The external split JSON has `folds` mapping fold numbers to disjoint train/val/test
+lists, plus `supplemental_subjects`. A non-smoke invocation checks four folds,
+32 unique outer-test patients, four validation patients per fold, complete cohort
+coverage and training-only supplemental recordings. Fixed identity assignments
+and validation-permutation provenance stay private and must be supplied; the
+unpublished input order/RNG is not guessed. Smoke inputs may use a reduced
+manifest. All models must use the same support, folds and realized readings.
 
-Supply a separate JSON mapping fold numbers to disjoint `train`, `val` and `test` subject lists. Subject identifiers and fold assignments remain outside the repository. An outer-test subject occurs in only one fold. All models use the same supplied folds, retained support and reading locations.
+At least six windows are needed per retained two-minute block. Its availability
+is max(bin end, all window completion times). A begins readings at the first test
+block; B at the original recording start (required scalar recording_start_s). Schedules map every elapsed
+4/8/12/24h time to the next completed retained block and deduplicate positions.
+Optional reading_indices_N (A) and reading_indices_B_N (B) are checked against
+this rule. The default interval is four hours.
 
-## Commands
+## Explicit invocation choices
 
-```bash
-cardiossm-train --model cardiossm --input private_inputs/windows \
-  --splits private_inputs/folds.json --output outputs/cardiossm-seed0 \
-  --seed 0 --device cuda:0 --intervals 4 8 12 24 --lock outputs/worker.lock
+`cardiossm-train --help` lists the entry point. Input, split and output directories
+are explicit; output must be outside the repository, including ignored folders.
+No training is triggered by import or by analysis commands. No automatic resume
+or retries occur. Do not run a study until the unresolved choices are settled.
 
-cardiossm-train --model bcgnet --input private_inputs/windows \
-  --splits private_inputs/folds.json --output outputs/bcgnet-seed0 \
-  --seed 0 --device cuda:0 --intervals 4 8 12 24 --lock outputs/worker.lock
+Conditions are selected with `--conditions`:
 
-cardiossm-train --model fsnet --input private_inputs/windows \
-  --splits private_inputs/folds.json --output outputs/fsnet-seed0 \
-  --seed 0 --device cuda:0 --intervals 4 8 12 24 --lock outputs/worker.lock
-```
+- pretraining_only: no target fitting or updates;
+- initial_only: initial fitting, no reading updates;
+- periodic_only: pretrained weights, readings from recording start, SD5 noise,
+  no initial fitting or replay;
+- initial_periodic: initial fitting, error-free readings and calibration replay.
 
-## Shared training procedure
+Initial conditions require `--initial-split-unit blocks|windows`. Periodic
+conditions require positive `--online-learning-rate` and `--memory-samples`.
+Initial+periodic additionally requires `--replay-samples` and
+`--replay-source fit|calibration`. Counts denote samples in that architecture:
+axis-windows for CardioSSM/BCGnet and whole three-axis windows for FSNet. These
+numbers have no inferred Methods defaults. --online-sampling explicitly selects
+uniform with_replacement or without_replacement; the latter rejects counts
+exceeding the available memory/replay pool. The convention is recorded.
 
-- Pretraining uses every fourth training window and every twentieth validation window, three epochs, batch size 256, AdamW weight decay 1e-4, and OneCycle peak learning rate 1e-3. CardioSSM and BCGnet sample individual axis-windows; FSNet samples three-axis windows. Feature/MAP normalization is fitted on training subjects only, and standardized features are clipped to ±10.
-- The MAP objective is standardized Huber loss with threshold 1. CardioSSM and BCGnet additionally use their waveform decoders for reconstruction MSE weighted by 0.1. FSNet retains its single-output ResNet18 architecture without an auxiliary decoder.
-- Initial calibration is the first 30% of retained blocks. Its first 80% of raw windows train the model; the last 20% select weights. Initial fitting uses learning rate 1e-4, at most 20 epochs, patience five, and keeps the pretrained weights if no epoch improves validation MAE.
-- At each reading, the current block is predicted with the existing weights. The reading then labels its windows, and 30 AdamW steps use 64 accumulated reading samples plus 64 initial-calibration replay samples. Updated weights predict only later blocks. Each interval starts from the selected initial-fit weights.
-- The output includes raw predictions, block means and past-only 60min block means, with support (t−3600,t], startup min_periods=1 and run resets after gaps >30min. Completed-block availability supplies t. No whole-record neural centering is applied.
+No-initial conditions require `--no-initial-test-scope all|final70`. FSNet requires
+an explicit `--fsnet-batch-size` in whole windows. This does not assert equivalence
+to the specified 256 axis-windows. Input/architecture/loss exceptions for the
+cited FSNet remain unresolved; no new few-shot module or decoder is added.
 
-The default training seed is zero. Each new invocation requires a fresh output directory. Calibration readings are error-free block MAP values at the supplied locations.
+Known budgets remain: every fourth training window, every twentieth validation
+window; three pretraining epochs; AdamW weight decay 1e-4 and OneCycle peak1e-3;
+initial fit lr1e-4, at most20 epochs, patience5. Initial fitting compares against
+pretrained validation MAE and retains pretrained weights if none improves. The
+MAP loss is standardized Huber delta1; CardioSSM/BCGnet add 0.1 reconstruction MSE
+during pretraining/initial fit only. Reading updates use30 AdamW steps and no
+decoder. Seed defaults to0. `--smoke` reduces budgets, but still requires explicit
+unresolved choices and labels the output as smoke.
 
-## Architectures
+## Shared run partition
 
-**CardioSSM** uses a shared residual U-block encoder with widths 16/32/64/64/64, yielding a 64-dimensional embedding. Concatenate the 42 features and project to 64 dimensions. Two Mamba2 blocks use state 32, expansion 2, head dimension 32, convolution width 4 and chunk 64. A 64→128→1 head predicts standardized MAP. Historical streams stay within a patient, axis and within-bin window position, and reset at >30min gaps. Sampled CNN targets have live gradients; older cached CNN embeddings are detached and refreshed each epoch/update. Projection and SSM gradients span the valid history. The decoder is used only for pretraining and initial fitting.
+Every condition requires --run-gap-basis window_completion or block_completion.
+Methods does not uniquely choose that clock; neither has a default. The loader
+creates window_run_id and block run_id once, before training or inference.
+History, inference resets, network/reference/HR means, calibration variance,
+between-reading segments and scale averages all consume that partition. A block
+crossing multiple window-defined runs is rejected rather than silently merged.
+Run metadata is saved with predictions; checkpoints must declare the matching
+basis. Old outputs lacking run IDs must be regenerated explicitly, not repaired
+by independently guessing gaps in the analysis layer.
 
-**BCGnet** uses the current axis-window, the residual U-block encoder/decoder and the 42-feature MAP head without historical tokens.
+## CardioSSM history and state
 
-**BCG-BP-FSNet** uses a ResNet18 on [batch,3,1,1000] with a single MAP head and per-window/channel standardization. It uses the same supervised stages and update schedule above.
+Each patient/axis has one complete chronological stream, independent of block
+position. Only a boundary from the explicit shared run partition starts a new stream run.
+The context audit checks completeness as well as no future/cross-axis inputs.
+The U-block encoder widths16/32/64/64/64 produce64 dimensions; 42 features are
+concatenated and projected to64. Two Mamba2 blocks use expansion2, four heads of
+32, state32, convolution width4 and dropout0.1. The head is LayerNorm64 followed
+by64→128→1, ReLU and dropout0.2.
 
-Offset and HR are assembled separately using the analysis package. HR is block monitor HR minus its past-only 60min mean, with beta=1. The scalar Kalman filter predicts the block before assimilating its reading.
+Training caches detached history CNN embeddings outside sampled targets; live
+targets retain gradients, including through projection and temporal states.
+Inference instead visits each window once with explicit per-axis H and causal
+convolution buffers. These buffers survive weight updates; replay/refresh uses
+separate objects and never replays or overwrites inference history. A new
+patient/condition/interval gets fresh buffers. The reading block is predicted
+before its label enters memory; only later windows use updated weights.
 
-## Runtime and checks
+The unfused streaming recurrence operates on native Mamba2 parameters. Training
+continues to use its native differentiable scan. Cached inference state is not a
+model checkpoint and is not serialized into the public repository.
 
-Training holds a shared nonblocking file lock and runs one process. Default software checks stop above 16GiB owned process-tree RSS or below 64GiB host available memory; CUDA memory fraction is 0.30. Failure is saved and never automatically retried. CPU checks can override the host-free threshold explicitly.
+## Outputs and analysis
 
-```bash
-cardiossm-train --model bcgnet --input private_inputs/windows \
-  --splits private_inputs/folds.json --output outputs/bcgnet-smoke \
-  --device cpu --smoke --min-host-free-gib 0
-```
+External output records contain raw/window, unsmoothed block and past-only
+60min network streams, completed timestamps, per-condition masks/reading positions
+and realized reading values. Monitor HR is included when supplied. Outputs are
+not study results until independently evaluated. B's noise uses an explicitly
+documented SHA-256 patient/interval/seed0 convention, shared across model names;
+it is not asserted to match archived random draws.
 
-Smoke mode uses one fold, one test subject, one pretraining epoch, one fitting epoch and one online optimizer step. Its outputs are labeled as smoke. Tests generate tensors in memory and check reconstruction/backpropagation, supervised fitting, history support, past-only smoothing and prediction-before-update timing. Native Mamba2 forward/backward testing requires CUDA and is explicitly skipped when unavailable.
+Use `cardiossm-analysis prepare --models NAME=external-directory ... --tag IP4
+--output external-aligned-directory` to validate matching support and extract
+unsmoothed block inputs. The adapter never double-smooths or invents monitor HR.
+For B, assembly uses other-patient calibration variance medians plus25; for A,
+its own calibration residual variance is used. See [analysis schema](input-schema.md).
+
+## Validation and runtime limits
+
+Tests generate arrays in memory. CPU parameter fixtures exercise the actual
+streaming/index/online-runner paths against independent recurrence equations,
+including weight updates, replay isolation, true gaps and unlabelled outcomes.
+They do not claim native kernel validation. Native forward/backward and
+scan/stream numerical checks are opt-in with `CARDIOSSM_TEST_CUDA=1`, require
+Mamba2/CUDA, and are skipped by the CPU-only test invocation.
+
+Training holds a shared nonblocking lock and one worker, with software RSS,
+free-memory and CUDA-memory-fraction limits. Failure is recorded externally;
+there is no automatic retry. No patient input or study output is bundled.

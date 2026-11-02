@@ -30,7 +30,7 @@ With `score --assemble-offset-hr`, provide `neural_predictions` (T × M) instead
 
 `neural_predictions` contains unsmoothed 2min neural block means generated before the reading update. The assembly command computes past-only 60min means of the neural stream, reference MAP and HR in the same run, with startup min_periods=1 and >30min gap resets. The HR term is block HR minus its past-only mean, with beta=1. It uses no whole-record neural centering. Both network and filter update a reading only after predicting that block.
 
-The `offset_hr` Python API accepts these already computed past-only contributions. The CLI uses fixed qa shared across models; other-patient test-MAE selection is available through `select_qa_other_patients`, with `candidate_interval` for bootstrap reselection. The generated `OffsetHR` baseline sets the neural stream to zero.
+The `offset_hr` Python API requires an explicit qa and accepts these already computed past-only contributions. The CLI defaults to per-patient/model other-patient test-MAE selection from 0.5/2/8/32. --qa explicitly selects a fixed sensitivity analysis. --assemble-models specifies which networks receive offset and HR; other neural streams remain block network outputs. --candidate-output emits external candidate metrics; compare --tuning reselect repeats selection, excluding every copy of the held-out identity. The generated `OffsetHR` baseline sets the neural stream to zero.
 
 ## Output averaging scales
 
@@ -52,3 +52,47 @@ The screening function computes past-only 60min means of MAP and features, selec
 ## Candidate bootstrap API
 
 `candidate_interval(first_values, first_errors, second_values, second_errors, metric)` accepts arrays with unique patients as rows and qa candidates as columns. Align patient identities across models explicitly before calling. Values contain the metric being reported; errors contain the protocol's tuning score, which may differ from that metric. The bootstrap excludes every occurrence of the held-out identity from tuning. Use patient Fisher-z values with `metric="z_seg"` to obtain cohort r_seg intervals.
+
+## Runner adapter and no-initial-calibration condition
+
+`prepare --models NAME=external-directory ... --tag IP4 --output external-directory`
+aligns one condition across model outputs. It requires identical patient, raw
+window, completed-block, test/calibration and realized-reading support, consumes
+only unsmoothed block means, and never back-dates estimates to native windows.
+HRb is copied only when supplied and checked across models. The corresponding
+P5_N tag identifies periodic-only runs; PT and I identify standalone conditions.
+
+Optional `reading_values` [T] supplies actual (possibly noisy) measurements,
+finite at reading_mask positions. Without calibration, supply per-patient
+`calibration_variance` scalars from the external reference analysis: assembly
+excludes each target identity, takes the median of the other rows and adds25.
+It never estimates R from the target's no-calibration labels. The first reading
+block uses the initialized mean0/variance10000 prior before assimilation.
+
+`score --network-only --network-scale block|slow` scores network inputs alone;
+slow mode applies matching past-only means to both prediction and reference.
+Already assembled inputs use `predictions`; they are not implicitly smoothed.
+All derived files must be outside the code repository.
+
+No-initial runner inputs require scalar recording_start_s from the original recording, before retention. The first scheduled time is that value; mapping to completed retained blocks does not restart the interval clock.
+
+## Required shared run metadata and scoring scales
+
+All score, scales and features CLI input records require run_id [T], a
+nonnegative monotone integer vector, and scalar run_gap_basis, either
+window_completion or block_completion. These must come from the same partition
+used by the network. Explicit IDs control all run resets; consumers do not
+recompute gaps from completed-block timestamps. Standalone Python utilities
+retain a timestamp fallback only for isolated descriptive calls, not runner
+output adaptation or CLI scoring.
+
+Training outputs additionally carry window_run_id aligned with raw_t. prepare
+checks both IDs across models and verifies each window's run matches its block.
+Legacy outputs missing IDs are rejected. No analysis-side fallback is invented.
+
+Score rows and candidate rows include reference_scale/prediction_scale
+(block_2min or past_only_60min) and run_gap_basis. Slow network-only scoring emits
+only level metrics (MAE/r_test/r_seg, Fisher-z and counts), without concordance,
+change-pair or drop/rise event columns. Block mode retains those endpoints.
+Compare requires matching scale and run-basis metadata and refuses event metrics
+on slow targets. Old metric CSVs must be regenerated with explicit definitions.

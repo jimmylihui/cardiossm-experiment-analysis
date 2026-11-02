@@ -17,7 +17,7 @@ def feature_correlations(features, reference, min_pairs=60, min_reference_sd=1.)
 
 
 def heldout_screen(time, reference, features, train_fraction=.3, embargo_s=3600.,
-                   null_resamples=499, seed=0):
+                   null_resamples=499, seed=0,run_id=None):
     """Past-only 60min means, training-only feature selection, later evaluation.
 
     The max-null jointly circular-shifts all features within contiguous held-out
@@ -35,7 +35,7 @@ def heldout_screen(time, reference, features, train_fraction=.3, embargo_s=3600.
     split = int(train_fraction * len(t))
     if split < 1 or split >= len(t):
         raise ValueError("insufficient blocks for split")
-    smooth = rolling_average(np.column_stack((y, x)), t)
+    smooth = rolling_average(np.column_stack((y, x)), t,run_id=run_id)
     y, x = smooth[:, 0], smooth[:, 1:]
     later = np.flatnonzero((np.arange(len(t)) >= split) & (t > t[split - 1] + embargo_s))
     train_r = feature_correlations(x[:split], y[:split])

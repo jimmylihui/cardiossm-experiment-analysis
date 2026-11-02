@@ -1,5 +1,6 @@
 """Model and training checks use generated tensors only; no bundled weights/data."""
 import importlib.util
+import os
 from pathlib import Path
 import tempfile, unittest
 import numpy as np
@@ -11,6 +12,7 @@ if HAS_TORCH:
     from cardiossm_training.models.fsnet import normalize_windows
     from cardiossm_training.history import Pool
     from cardiossm_training import data, core
+    from cardiossm_training.options import TrainingChoices
     torch.set_num_threads(1)
 
 
@@ -49,7 +51,7 @@ class ModelTests(unittest.TestCase):
         best,history,steps=engine.fit(model,tr,va,1,1e-4,1,5,False,True)
         self.assertEqual(steps,1);self.assertTrue(np.isfinite(best[0]))
 
-    @unittest.skipUnless(HAS_TORCH and importlib.util.find_spec('mamba_ssm') is not None
+    @unittest.skipUnless(os.environ.get('CARDIOSSM_TEST_CUDA')=='1' and HAS_TORCH and importlib.util.find_spec('mamba_ssm') is not None
                          and torch.cuda.is_available(), 'real Mamba2 execution requires optional Mamba and CUDA')
     def test_cardiossm_native_cuda_forward_backward(self):
         net = CardioSSM().cuda().train()
@@ -59,10 +61,22 @@ class ModelTests(unittest.TestCase):
         (p.square().mean() + .1 * rec.square().mean()).backward()
         self.assertTrue(all(torch.isfinite(v.grad).all() for v in net.parameters() if v.grad is not None))
 
+    @unittest.skipUnless(os.environ.get('CARDIOSSM_TEST_CUDA')=='1' and HAS_TORCH
+                         and importlib.util.find_spec('mamba_ssm') is not None and torch.cuda.is_available(),
+                         'native CUDA comparison is opt-in and requires Mamba2/CUDA')
+    def test_native_scan_matches_streamed_recurrence(self):
+        with torch.no_grad():
+            net=CardioSSM().cuda().eval();tokens=torch.randn(2,9,64,device='cuda')
+            expected=net.temporal(tokens);states=None;outputs=[]
+            for token in tokens.unbind(1):
+                value,states=net.temporal_step(token,states);outputs.append(value)
+            torch.testing.assert_close(torch.stack(outputs,1),expected,rtol=2e-3,atol=2e-3)
+
     def test_full_context_never_uses_future_labels_or_other_axis(self):
         t = np.r_[np.arange(20) * 120., 10000 + np.arange(20) * 120.]
         d = dict(t=t, availability_s=t+10, sig=np.zeros((len(t), 3, 1000), np.float32),
                  fid=np.zeros((len(t), 3, 42), np.float32), map=np.arange(len(t), dtype=np.float32))
+        d.update(data.run_support(t,t+10,'window_completion'))
         pool = Pool({'sample': d}, ['sample'])
         ids = np.arange(len(pool.Y)); ix, valid = pool.contexts(ids)
         self.assertTrue(np.all(pool.T[ix][valid] <= np.broadcast_to(pool.T[ids, None], ix.shape)[valid]))
@@ -90,10 +104,10 @@ class ModelTests(unittest.TestCase):
         d=dict(t=t,availability_s=t+10,sig=rng.normal(size=(n,3,1000)).astype(np.float32),
                fid=rng.normal(size=(n,3,42)).astype(np.float32),map=rng.normal(80,3,n).astype(np.float32),
                retained_mask=np.ones(n,bool),reading_indices_4=np.array([9]))
-        retained=data.retained(d,'sample');pool=core.pool_for('bcgnet')({'sample':retained},['sample'])
+        retained=data.retained(d,'sample','windows','window_completion');pool=core.pool_for('bcgnet')({'sample':retained},['sample'])
         tr=pool.ids('sample',retained['itr'])
         norm=(pool.F[tr].mean(0),pool.F[tr].std(0)+1e-6,pool.Y[tr].mean(),pool.Y[tr].std()+1e-6)
-        torch.manual_seed(4);ck=dict(state=core.state(BCGnet()),norm=norm)
+        torch.manual_seed(4);ck=dict(state=core.state(BCGnet()),norm=norm,architecture_version=BCGnet.architecture_version,run_gap_basis='window_completion')
         old=(core.ROOT,core.FIT_EPOCHS,core.ONLINE_STEPS,core.NS,core.SEED)
         with tempfile.TemporaryDirectory() as directory:
             try:
@@ -104,7 +118,8 @@ class ModelTests(unittest.TestCase):
                     if case:altered['map'][retained['groups'][9]]-=400
                     core.ROOT=Path(directory)/str(case)
                     (core.ROOT/'bcgnet/f0').mkdir(parents=True)
-                    core.patient('bcgnet',0,'sample',ck,{'sample':altered},None,torch.device('cpu'))
+                    choices=TrainingChoices('windows',1e-4,64,64,'fit',online_sampling='with_replacement',run_gap_basis='window_completion')
+                    core.patient('bcgnet',0,'sample',ck,{'sample':altered},None,torch.device('cpu'),choices)
                     with np.load(core.ROOT/'bcgnet/f0/sample.npz') as z:predictions.append(z['IP4'].copy())
                 np.testing.assert_array_equal(predictions[0][:10],predictions[1][:10])
                 self.assertGreater(float(np.max(abs(predictions[0][10:]-predictions[1][10:]))),0.)

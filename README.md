@@ -14,7 +14,7 @@ The optional `cardiossm_training` package includes:
 | BCGnet | Current-window U2 encoder/auxiliary decoder with 42-feature MAP head | Supervised pretraining, initial fitting and periodic replay |
 | BCG-BP-FSNet | ResNet18 with a three-axis ICU tensor and one MAP head | Shared supervised pretraining, initial fitting and periodic replay |
 
-The three models share the training stages and optimizer budgets described in Methods. Offset and HR assembly use past-only averages and predict each reading block before updating the model and filter.
+Known training stages follow Methods. Unspecified split, online and FSNet budgets require explicit choices; see [unresolved protocol details](docs/methods-ambiguities.md). CardioSSM inference carries signal-only state across readings, separate from replay. Offset and HR assembly use past-only averages and predict reading blocks before updates.
 
 See [training instructions and input schema](docs/training.md) for dependencies, external fold manifests, commands, full training budgets and smoke tests.
 
@@ -43,51 +43,52 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-Analysis commands do not download data, contact an experiment server, or launch training. Training runs only through the separately invoked optional `cardiossm-train` entry point. Keep inputs in an external directory or in the ignored `private_inputs/` directory. See [input schemas](docs/input-schema.md).
+Analysis commands do not download data, contact an experiment server, or launch training. Training runs only through the separately invoked optional `cardiossm-train` entry point. Keep inputs and all generated outputs outside this code repository, including ignored directories. See [input schemas](docs/input-schema.md).
 
 ## Usage
 
 Compute patient metrics from externally supplied, already assembled predictions:
 
 ```bash
-cardiossm-analysis score --input private_inputs/aligned/ --output outputs/patient_metrics.csv
+cardiossm-analysis score --input ../cardiossm_inputs/aligned/ --output ../cardiossm_outputs/patient_metrics.csv
 ```
 
-Apply exactly the same offset+HR assembly to each supplied neural stream and a generated `OffsetHR` zero-neural baseline, with fixed qa:
+Apply offset+HR only to explicitly selected networks and a generated OffsetHR baseline. By default, qa is selected per patient/model on the other patients’ test MAE. A fixed qa sensitivity requires an explicit --qa value:
 
 ```bash
-cardiossm-analysis score --input private_inputs/neural/ --assemble-offset-hr --qa 2 \
-  --output outputs/matched_patient_metrics.csv
+cardiossm-analysis score --input ../cardiossm_inputs/neural/ --assemble-offset-hr --assemble-models CardioSSM \
+  --output ../cardiossm_outputs/matched_patient_metrics.csv
 ```
 
 Compare paired patients, with correlation as the reporting focus:
 
 ```bash
-cardiossm-analysis compare --input outputs/matched_patient_metrics.csv \
-  --reference OffsetHR --metric r_seg --resamples 10000 --seed 0 \
-  --output outputs/correlation_contrasts.csv
+cardiossm-analysis compare --input ../cardiossm_outputs/matched_patient_metrics.csv \
+  --reference OffsetHR --metric r_seg --aggregation median \
+  --contrast difference_of_aggregates --tuning fixed --resamples 10000 --seed 0 \
+  --output ../cardiossm_outputs/correlation_contrasts.csv
 ```
 
-Use `--metric r_test`, `concordance`, `mae`, `drop_auroc`, `rise_auroc`, `drop_average_precision`, or `rise_average_precision` for the corresponding contrasts. The CLI comparison uses fixed tuning. Outcome-selected qa must instead use the Python `candidate_interval` API to repeat selection inside every bootstrap sample.
+Use `--metric r_test`, `concordance`, `mae`, `drop_auroc`, `rise_auroc`, `drop_average_precision`, or `rise_average_precision` for the corresponding contrasts. Comparison aggregation, contrast and tuning are explicit. For bootstrap reselection, score with --candidate-output and pass that CSV to compare --tuning reselect. For median patient gain use --contrast median_paired_delta; this differs from a difference of cohort medians. Use mean aggregation for the overall mean-patient-r comparison and median for median-patient-r results. The active text does not determine the paired test or complete Holm family; adjust-p accepts supplied p-values with explicit families.
 
 ```bash
-cardiossm-analysis score --input private_inputs/aligned/ --concordance-no-reading \
-  --output outputs/reading_free_concordance.csv
-cardiossm-analysis scales --input private_inputs/native/ \
-  --seconds 10 30 60 120 300 600 1200 1800 3600 --output outputs/scales.csv
-cardiossm-analysis features --input private_inputs/features/ \
-  --resamples 499 --seed 0 --output outputs/feature_associations.csv
+cardiossm-analysis score --input ../cardiossm_inputs/aligned/ --concordance-no-reading \
+  --output ../cardiossm_outputs/reading_free_concordance.csv
+cardiossm-analysis scales --input ../cardiossm_inputs/native/ \
+  --seconds 10 30 60 120 300 600 1200 1800 3600 --output ../cardiossm_outputs/scales.csv
+cardiossm-analysis features --input ../cardiossm_inputs/features/ \
+  --resamples 499 --seed 0 --output ../cardiossm_outputs/feature_associations.csv
 ```
 
 The scale command requires native-resolution series. It refuses to generate scales finer than the supplied sampling interval. It computes non-overlapping averages; rolling past-only averages are provided by `temporal.py`.
 
 ## Experimental interpretation
 
-Read [protocols](docs/protocols.md) before assembling a comparison. The network and HR terms use completed-block availability times and past-only 60min averages. The model and filter assimilate each reading after predicting its block.
+Read [protocols](docs/protocols.md) before assembling a comparison. The network and HR terms use completed-block availability times and past-only 60min averages. The model and filter assimilate each reading after predicting its block. A required run-gap clock creates shared run IDs; state and averaging consume the same partition. Slow scores contain level metrics only, while block-change endpoints remain in block scores. Comparisons require matching target-scale metadata.
 
 Report all predefined seeds and calibration intervals. Select neural checkpoints using validation data, preserve the patient split, and pair the same patients across models. A point estimate above a baseline and a paired interval excluding zero are different findings. Averaging patient metrics across seeds is not a prediction ensemble.
 
-This is a portable code refactor. Analysis consumes externally prepared observations or predictions; optional training consumes externally prepared waveform/features and explicit fold/reading manifests. Private signal extraction and every archived experiment invocation are not included.
+This is a portable code refactor. Analysis consumes externally prepared observations or predictions; optional training consumes externally prepared waveform/features and explicit fold/reading manifests. Private signal extraction, full-stage masking, SHAP and all archived figure-generation invocations are not included. No numerical reproduction is asserted.
 
 ## Verification
 
@@ -95,7 +96,7 @@ This is a portable code refactor. Analysis consumes externally prepared observat
 python -m unittest discover -s tests -v
 ```
 
-Tests generate numerical fixtures in memory. Training tests require the optional PyTorch dependencies; native CardioSSM forward/backward execution additionally requires Mamba2 and CUDA, and is explicitly skipped when unavailable. No example patient files or study output is checked in. Binary data and common result formats are excluded by `.gitignore`; `scripts/check_repository.py` also checks the committed file list before publication.
+Tests generate numerical fixtures in memory. Training tests require optional PyTorch. Generated CPU parameter fixtures validate the production recurrence and persistent-state runner, not native kernels. Native Mamba2/CUDA checks are opt-in via CARDIOSSM_TEST_CUDA=1 and skipped otherwise. No example patient files or study output is checked in. Binary data and common result formats are excluded by `.gitignore`; `scripts/check_repository.py` also checks the committed file list before publication.
 
 ## Repository layout
 

@@ -1,5 +1,6 @@
 """Time support, averaging and reading-excluded evaluation intervals."""
 import numpy as np
+from .runs import run_slices, validate_run_ids
 
 
 def validate_time(time):
@@ -9,7 +10,7 @@ def validate_time(time):
     return t
 
 
-def rolling_average(values, time, window_s=3600., mode="past_only", gap_s=1800.):
+def rolling_average(values, time, window_s=3600., mode="past_only", gap_s=1800.,run_id=None):
     """Run-aware mean on completed observations in (t-window,t], startup min_periods=1."""
     t = validate_time(time)
     x = np.asarray(values, dtype=float)
@@ -18,8 +19,7 @@ def rolling_average(values, time, window_s=3600., mode="past_only", gap_s=1800.)
     if mode != "past_only":
         raise ValueError("mode must be past_only")
     out = np.full_like(x, np.nan)
-    cuts = np.r_[0, np.flatnonzero(np.diff(t) > gap_s) + 1, len(t)]
-    for a, b in zip(cuts[:-1], cuts[1:]):
+    for a, b in run_slices(t,run_id,gap_s):
         tt = t[a:b]
         lo = np.searchsorted(tt, tt - window_s, side="right")
         hi = np.arange(1, b - a + 1)
@@ -31,7 +31,7 @@ def rolling_average(values, time, window_s=3600., mode="past_only", gap_s=1800.)
     return out
 
 
-def change_pairs(time, test_mask, reading_mask, steps=5, max_span_s=720., exclude_readings=True):
+def change_pairs(time, test_mask, reading_mask, steps=5, max_span_s=720., exclude_readings=True,run_id=None):
     """Endpoints separated by `steps` retained test blocks; inclusive reading exclusion."""
     t = validate_time(time)
     test = np.asarray(test_mask, bool)
@@ -42,6 +42,8 @@ def change_pairs(time, test_mask, reading_mask, steps=5, max_span_s=720., exclud
     end = ids[steps:]
     start = ids[:-steps]
     keep = t[end] - t[start] <= max_span_s
+    if run_id is not None:
+        runs=validate_run_ids(run_id,len(t));keep &= runs[end]==runs[start]
     if exclude_readings:
         counts = np.r_[0, np.cumsum(readings)]
         keep &= counts[end + 1] - counts[start] == 0
@@ -49,7 +51,7 @@ def change_pairs(time, test_mask, reading_mask, steps=5, max_span_s=720., exclud
 
 
 def between_reading_segments(time, reference, test_mask, reading_mask, gap_s=1800.,
-                             min_blocks=5, min_span_s=3600., min_reference_sd=1.):
+                             min_blocks=5, min_span_s=3600., min_reference_sd=1.,run_id=None):
     """Exclude each reading block; split at gaps; apply original segment eligibility."""
     t = validate_time(time)
     y = np.asarray(reference, float)
@@ -59,10 +61,12 @@ def between_reading_segments(time, reference, test_mask, reading_mask, gap_s=180
         raise ValueError("reference and masks must match time")
     ids = np.flatnonzero(test)
     locations = np.flatnonzero(readings[ids])
+    runs=validate_run_ids(run_id,len(t)) if run_id is not None else None
     segments = []
     for a, b in zip(locations, list(locations[1:]) + [len(ids)]):
         part = ids[a + 1:b]
-        for q in np.split(part, np.flatnonzero(np.diff(t[part]) > gap_s) + 1):
+        cuts=np.flatnonzero(np.diff(t[part])>gap_s) + 1 if runs is None else np.flatnonzero(np.diff(runs[part])) + 1
+        for q in np.split(part,cuts):
             if (len(q) >= min_blocks and t[q[-1]] - t[q[0]] >= min_span_s
                     and np.isfinite(y[q]).all() and np.std(y[q]) >= min_reference_sd):
                 segments.append(q)

@@ -5,13 +5,13 @@ from .temporal import change_pairs
 
 
 def event_metrics(time, reference, prediction, test_mask, reading_mask,
-                  direction="drop", threshold_mmhg=10., min_each_class=5):
+                  direction="drop", threshold_mmhg=10., min_each_class=5,run_id=None):
     if direction not in ("drop", "rise") or threshold_mmhg <= 0 or min_each_class < 1:
         raise ValueError("invalid event definition")
     y, p = np.asarray(reference, float), np.asarray(prediction, float)
     if y.shape != p.shape or y.shape != np.asarray(time).shape:
         raise ValueError("matching time, reference and prediction vectors required")
-    a, b = change_pairs(time, test_mask, reading_mask, exclude_readings=True)
+    a, b = change_pairs(time, test_mask, reading_mask, exclude_readings=True,run_id=run_id)
     dy, dp = y[b] - y[a], p[b] - p[a]
     if not np.isfinite(dy).all() or not np.isfinite(dp).all():
         raise ValueError("event endpoints must be finite")

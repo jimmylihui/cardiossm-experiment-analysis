@@ -14,13 +14,22 @@ PATTERNS = {
 }
 
 def check():
-    query = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True)
+    query = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard", "-z"], capture_output=True)
     if query.returncode != 0:
         raise SystemExit("Initialize and stage the intended files first.")
     paths = [Path(p) for p in query.stdout.decode().split("\0") if p]
     if not paths:
         raise SystemExit("No staged/tracked files to check.")
     errors = []
+    # Ignoring artifacts is not permission to keep them in this code tree.
+    artifact_suffixes={'.npz','.npy','.pt','.pth','.ckpt','.safetensors','.csv','.tsv','.parquet','.edf','.mat','.h5','.hdf5',
+                       '.json','.jsonl','.pkl','.pickle','.pdf','.png','.svg','.log'}
+    for candidate in ROOT.rglob('*'):
+        rel=candidate.relative_to(ROOT)
+        if any(part in {'.git','.venv','venv','__pycache__','.pytest_cache'} for part in rel.parts):
+            continue
+        if candidate.is_file() and candidate.suffix.lower() in artifact_suffixes:
+            errors.append((str(rel),'data/model/result artifact in working tree'))
     for rel in paths:
         p = ROOT / rel
         if p.is_symlink():

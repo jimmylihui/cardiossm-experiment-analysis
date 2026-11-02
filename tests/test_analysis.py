@@ -69,7 +69,7 @@ class AssemblyTests(unittest.TestCase):
         y = np.full(20, 80.); y[10] = 140.
         cal = np.arange(20) < 5
         read = np.zeros(20, bool); read[10] = True
-        _, p = offset_hr(t, y, np.full(20, 80.), np.zeros(20), np.zeros(20), cal, read)
+        _, p = offset_hr(t, y, np.full(20, 80.), np.zeros(20), np.zeros(20), cal, read, qa=2.)
         self.assertLess(p[10], 81.)
         self.assertGreater(p[11], 130.)
 
@@ -78,16 +78,16 @@ class AssemblyTests(unittest.TestCase):
         h = np.sin(np.arange(100)); y = 80 + h
         cal = np.arange(100) < 20
         read = np.zeros(100, bool); read[20] = True; read[60] = True
-        _, p = offset_hr(t, y, np.full(100, 80.), np.zeros(100), h, cal, read)
+        _, p = offset_hr(t, y, np.full(100, 80.), np.zeros(100), h, cal, read, qa=2.)
         a, b = change_pairs(t, ~cal, read)
         np.testing.assert_allclose(p[b] - p[a], h[b] - h[a], atol=1e-12)
 
     def test_future_neural_values_do_not_change_past_assembly(self):
         t=np.arange(80)*120.;y=np.full(80,80.);u=np.sin(np.arange(80)/9)
         cal=np.arange(80)<15;read=np.zeros(80,bool);read[15]=True
-        _,first=offset_hr(t,y,y,u,np.zeros(80),cal,read)
+        _,first=offset_hr(t,y,y,u,np.zeros(80),cal,read,qa=2.)
         changed=u.copy();changed[50:]+=1000
-        _,second=offset_hr(t,y,y,changed,np.zeros(80),cal,read)
+        _,second=offset_hr(t,y,y,changed,np.zeros(80),cal,read,qa=2.)
         np.testing.assert_array_equal(first[:50],second[:50])
 
     def test_heldout_row_cannot_select_its_own_qa(self):

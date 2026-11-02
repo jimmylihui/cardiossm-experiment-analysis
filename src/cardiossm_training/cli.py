@@ -4,6 +4,8 @@ import argparse, fcntl, gc, hashlib, json, os, random, sys, time, traceback
 import numpy as np
 import torch
 from . import data
+from .options import TrainingChoices, CONDITIONS
+from cardiossm_analysis.runs import RUN_GAP_BASES
 
 
 def atom(path, value):
@@ -19,6 +21,16 @@ def main():
     p.add_argument('--output', required=True, help='fresh directory, outside version control')
     p.add_argument('--device', default='cuda:0'); p.add_argument('--seed', type=int, default=0)
     p.add_argument('--folds', nargs='+', type=int); p.add_argument('--intervals', nargs='+', type=int)
+    p.add_argument('--conditions', nargs='+', choices=CONDITIONS, default=['initial_periodic'])
+    p.add_argument('--initial-split-unit', choices=['blocks','windows'])
+    p.add_argument('--online-learning-rate', type=float)
+    p.add_argument('--memory-samples', type=int)
+    p.add_argument('--replay-samples', type=int)
+    p.add_argument('--replay-source', choices=['fit','calibration'])
+    p.add_argument('--fsnet-batch-size', type=int)
+    p.add_argument('--no-initial-test-scope', choices=['all','final70'])
+    p.add_argument('--online-sampling',choices=['with_replacement','without_replacement'])
+    p.add_argument('--run-gap-basis',choices=RUN_GAP_BASES)
     p.add_argument('--lock', help='shared lock path for all training jobs; default is output parent/worker.lock')
     p.add_argument('--smoke', action='store_true', help='reduced training budgets; label outputs as smoke, not study results')
     p.add_argument('--max-rss-gib', type=float, default=16.)
@@ -26,7 +38,13 @@ def main():
     args = p.parse_args()
     if args.seed < 0 or args.max_rss_gib <= 0 or args.min_host_free_gib < 0:
         p.error('invalid seed or resource limits')
-    intervals = args.intervals or [4, 8, 12, 24]
+    choices=TrainingChoices(args.initial_split_unit,args.online_learning_rate,args.memory_samples,
+                            args.replay_samples,args.replay_source,args.fsnet_batch_size,args.no_initial_test_scope,args.online_sampling,args.run_gap_basis)
+    try:
+        choices.validate(args.model,args.conditions)
+    except ValueError as error:
+        p.error(str(error))
+    intervals = args.intervals or [4]
     if any(n not in [4,8,12,24] for n in intervals) or len(intervals)!=len(set(intervals)):
         p.error('intervals must be unique choices from 4,8,12,24 hours')
     dev = torch.device(args.device)
@@ -37,6 +55,8 @@ def main():
     if dev.type == 'cuda' and not torch.cuda.is_available():
         p.error('CUDA runtime unavailable')
     out = Path(args.output).resolve()
+    if out.is_relative_to(Path(__file__).resolve().parents[2]):
+        p.error('output must be outside the code repository, including ignored directories')
     if out.exists():
         p.error('output already exists; automatic resume/overwrite is disabled')
     lockpath = Path(args.lock).resolve() if args.lock else out.parent/'worker.lock'
@@ -67,13 +87,14 @@ def main():
         if dev.type == 'cuda':
             torch.cuda.set_device(dev); torch.cuda.set_per_process_memory_fraction(.30, dev)
             torch.backends.cuda.matmul.allow_tf32 = True
-        data.configure(args.input, args.splits)
+        data.configure(args.input, args.splits, study=not args.smoke)
         folds = args.folds if args.folds is not None else sorted(map(int, data.SPLITS))
         if args.smoke:
             folds = folds[:1]
         for f in folds:
             data.split(f)
         config = dict(model=args.model, seed=args.seed, device=str(dev), folds=folds, intervals_h=intervals,
+                      conditions=args.conditions,explicit_unresolved_choices=vars(choices),
                       smoke=args.smoke,
                       split_file_sha256=hashlib.sha256(Path(args.splits).read_bytes()).hexdigest(),
                       torch_version=torch.__version__, workers=1, automatic_retry=False,
@@ -90,11 +111,11 @@ def main():
         trainer.ONLINE_STEPS = 1 if args.smoke else 30
         for f in folds:
             atom(out/'progress.json', dict(stage='pretraining', fold=f, time=time.time()))
-            ck = trainer.pretrain(args.model, f, subjects, None, dev)
+            ck = trainer.pretrain(args.model, f, subjects, None, dev, choices)
             test = data.split(f)[2]
             for s in (test[:1] if args.smoke else test):
                 check_resource(); atom(out/'progress.json', dict(stage='patient', fold=f, subject=s, time=time.time()))
-                trainer.patient(args.model, f, s, ck, subjects, None, dev)
+                trainer.patient(args.model, f, s, ck, subjects, None, dev, choices, args.conditions)
                 completed.append(dict(fold=f, subject=s)); gc.collect()
                 if dev.type == 'cuda':
                     torch.cuda.empty_cache()
