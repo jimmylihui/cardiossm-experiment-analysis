@@ -82,6 +82,14 @@ class AssemblyTests(unittest.TestCase):
         a, b = change_pairs(t, ~cal, read)
         np.testing.assert_allclose(p[b] - p[a], h[b] - h[a], atol=1e-12)
 
+    def test_future_neural_values_do_not_change_past_assembly(self):
+        t=np.arange(80)*120.;y=np.full(80,80.);u=np.sin(np.arange(80)/9)
+        cal=np.arange(80)<15;read=np.zeros(80,bool);read[15]=True
+        _,first=offset_hr(t,y,y,u,np.zeros(80),cal,read)
+        changed=u.copy();changed[50:]+=1000
+        _,second=offset_hr(t,y,y,changed,np.zeros(80),cal,read)
+        np.testing.assert_array_equal(first[:50],second[:50])
+
     def test_heldout_row_cannot_select_its_own_qa(self):
         e = np.array([[1., 8.], [2., 4.], [8., 1.]])
         first = select_qa_other_patients(e)[0]

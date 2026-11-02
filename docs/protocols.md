@@ -1,57 +1,38 @@
 # Experimental protocols
 
-This document specifies calculations, not observed findings. Table and section numbers can change between manuscript versions; names below describe the analysis itself.
+## Estimator assembly
+
+Two-minute block predictions are issued at completed-block availability. The network term is the within-run past-only 60min average of block outputs, with support (t−3600,t], available startup blocks and resets after gaps >30min. The HR term is block monitor HR minus its past-only 60min mean, with beta=1mmHg/bpm. No whole-record mean is subtracted from the network term.
+
+At a reading block, the neural network and Kalman filter first predict using their existing states. The reading updates both for later blocks only. The offset variance starts at 10000 and grows by qa per elapsed hour. Initial-calibration pseudo-observations use past-only smoothed MAP every fifteenth retained calibration block with observation variance 4. Periodic readings observe MAP minus the HR contribution; observation variance is the initial-calibration variance of MAP minus its past-only mean minus HR.
+
+The no-BCG `OffsetHR` baseline uses a zero neural contribution with the same HR, calibration and reading masks. Candidate qa values are 0.5, 2, 8 and 32; selection uses other patients' test MAE and excludes the held-out patient's identity. Repeat this selection within each bootstrap resample when using outcome-selected qa. Fixed qa shared across models is also supported.
+
+## Training
+
+All three models use the supplied patient folds, supervised pretraining, initial fitting and reading updates specified in [training](training.md). Select neural checkpoints using validation data and report every predefined seed. The initial calibration is the first 30% of retained blocks; the remaining blocks form test support. The first reading is at the first test block, then every specified elapsed-hour interval, mapped to the next retained block.
 
 ## Patient metrics
 
-- **MAE:** compute absolute MAP error on each patient's test blocks, then give patients equal weight in the cohort mean.
-- **r_test:** Pearson correlation over a patient's whole test record; aggregate valid patient values with the median.
-- **r_seg:** exclude reading blocks, split the between-reading intervals at gaps exceeding 30min, and require at least five blocks, at least 1h span, and reference MAP SD at least 1mmHg. Average eligible segment Fisher-z within each patient. The cohort value is tanh of the median patient mean-z. This is not a pooled correlation.
-- **Concordance:** five successive retained 2min steps with at most 12min elapsed; retain actual absolute MAP changes at least 5mmHg. An effectively zero predicted change receives half credit. Require at least ten qualifying pairs per patient; report the median patient concordance. The historical definition permits calibration-reading crossings. Use the explicitly named reading-free sensitivity to exclude them.
+- **MAE:** mean absolute error within each patient, then equal-patient cohort mean.
+- **r_test:** whole-test patient Pearson correlation, then cohort median.
+- **r_seg:** exclude reading blocks; split between-reading intervals at gaps >30min; require at least five blocks, 1h span and reference MAP SD ≥1mmHg. Average segment Fisher-z within each patient. The cohort value is tanh of the median patient mean-z.
+- **Concordance:** five successive retained 2min steps with elapsed time ≤12min; actual |MAP change| ≥5mmHg; at least ten qualifying pairs per patient. Zero predicted change gets half credit. Report median patient concordance. Reading-crossing windows are included by default, with an explicit reading-free option.
 
-Constant or undefined correlations remain missing, with valid-patient and segment counts reported. For paired contrasts, use the common valid patient set. A difference of cohort median correlations differs from a median of patient delta-r values; name the reported quantity.
+Constant correlations remain missing. Report valid patient/segment counts and use common valid patients for paired contrasts. A difference of cohort medians is distinct from the median patient delta-r.
 
-## Between-reading events
+## Large changes between readings
 
-Use the same nominal 10min / maximum 12min endpoints and reject every window containing a calibration reading, including either endpoint. Label MAP decreases of at least 10mmHg and increases of at least 10mmHg separately. Scores are the corresponding signed predicted MAP change. A patient needs at least five positive and five negative windows for AUROC/AP. Aggregate eligible patient metrics with the median. All architectures and the no-BCG baseline use the same windows and eligibility.
+Use the same nominal 10min / maximum 12min endpoints and reject any window containing a reading, including either endpoint. Label MAP falls ≥10mmHg and rises ≥10mmHg separately; score the signed predicted change. Each patient needs at least five positives and five negatives. Report median patient AUROC/AP on identical eligible support across models.
 
-## Retrospective offset+HR assembly
+## Feature associations
 
-The historical comparison uses initial calibration from the first 30% of retained blocks, with initial neural fitting on an internal chronological train/validation split. Periodic error-free readings start at the first test block, then occur at the specified elapsed-hour interval. Each interval must have its own actual reading mask and corresponding neural trajectory.
+Compute past-only 60min means of retained block MAP and features. Select the strongest absolute correlation on the first 30% of blocks, requiring at least 60 finite pairs, feature variance and MAP SD ≥1mmHg. Evaluate blocks more than 60min after the selection boundary.
 
-The assembly implemented here retains these rules:
+For the max-null, split later blocks at gaps >180s and keep chunks of at least 61 blocks. Jointly circular-shift all features within each chunk by 30..L−30 blocks. Use the maximum absolute eligible-feature correlation for each of 499 draws and plus-one permutation p-values. These calculations describe associations; the prediction metrics use separately fitted models.
 
-1. The neural stream is averaged externally using the specified protocol; the historical model comparison used a centered 60min average.
-2. Subtract the whole-record neural mean. This is retrospective centering.
-3. Initialize offset variance to 10000. Its process variance grows by qa per elapsed hour.
-4. Initial-calibration pseudo-observations use smoothed reference MAP, every fifteenth retained calibration block, with variance 4.
-5. Periodic readings observe MAP minus the HR contribution; observation variance is estimated from initial-calibration residuals.
-6. Record the KF prediction before assimilating a reading at that block. Add the HR contribution with the fixed coefficient already reflected in its units.
+## Scales and uncertainty
 
-The historical neural trajectory at a reading block was generated after its neural update; that order belongs to the external training/inference pipeline, not this scalar KF function. Never interchange these two update orders.
+Output-scale analysis averages reference and predictions on identical non-overlapping support in each run. Use native observations, not an already smoothed stream, and never generate a scale finer than the input resolution. This does not retrain the encoder or change history length.
 
-`OffsetHR` sets the neural stream to zero. To compare architecture contributions, match the HR stream, reading positions, quality-screened support, initial calibration, filter parameters, evaluation targets and reporting endpoints.
-
-Original other-patient qa selection minimizes smoothed-reference MAE using other patients' test outcomes. It is retrospective outcome tuning. Keep it distinct from inner-validation selection. Fixed qa shared across models is an available sensitivity. If outcome-selected qa is used, repeat selection within each bootstrap sample and exclude all copies of the held-out patient.
-
-## Past-only descriptive averages
-
-At completed-block availability t, average values in (t−60min,t] within the same run. Use available startup blocks (`min_periods=1`) and restart after gaps >30min. This establishes the support of this averaging operation only; it does not remove future-dependent upstream quality screening or turn separately computed model tables into causal results.
-
-## Temporal feature separation and max-null
-
-For each patient, select the feature with strongest absolute correlation on the first 30% of retained blocks. Eligibility requires at least 60 finite pairs, feature variance, and reference MAP SD at least 1mmHg. Evaluate only blocks more than 60min after the selection boundary.
-
-For null testing, split later blocks at gaps >180s. Keep chunks of at least 61 blocks. Jointly circular-shift every feature by the same randomly chosen amount within each chunk, between 30 and L−30 blocks. Compute the maximum absolute correlation over eligible features for each of 499 draws. Use the plus-one permutation p-value. Report unavailable tests explicitly rather than filling them with a favorable value.
-
-These are descriptive association checks, distinct from prediction validation.
-
-## Seeds, checkpoints, calibration and history
-
-Hold subject folds, encoder, optimizer, calibration budget, update order and data support fixed when attributing differences to architecture or historical input. Select checkpoints using validation data, record all predefined seeds, and report each seed plus a clearly described across-seed summary. An average of patient metrics is not an ensemble of predictions.
-
-Changing calibration duration can change the eligible cohort. State duration in elapsed time, exclusion criteria and the common paired patient set. A controlled history experiment requires freshly matched current-only, bounded-history and full-history training conditions. This repository supplies analysis functions, not those missing training runs.
-
-## Uncertainty
-
-Use paired patient bootstrap, not independent block or overlapping-window resampling. Default intervals are 10000-resample, pointwise percentile 95% CIs conditional on the fitted models and specified tuning procedure. They do not capture the full variability of retraining or correct for searching across many models, intervals and endpoints.
+Use paired patient bootstrap with 10000 draws and pointwise percentile 95% intervals. Preserve pairing across models and exclude every bootstrap copy of the held-out identity during qa selection. An across-seed mean of patient metrics is not a prediction ensemble. Intervals are conditional on the fitted models and specified tuning procedure.

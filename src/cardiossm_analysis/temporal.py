@@ -10,28 +10,19 @@ def validate_time(time):
 
 
 def rolling_average(values, time, window_s=3600., mode="past_only", gap_s=1800.):
-    """Run-aware means, startup min_periods=1. Past support is (t-window,t].
-
-    Centered support is [t-window/2,t+window/2]. Timestamps must represent
-    availability when past-only availability is the intended interpretation.
-    NaNs are ignored; an all-missing window remains NaN. No interpolation.
-    """
+    """Run-aware mean on completed observations in (t-window,t], startup min_periods=1."""
     t = validate_time(time)
     x = np.asarray(values, dtype=float)
     if x.ndim not in (1, 2) or len(x) != len(t) or window_s <= 0 or gap_s <= 0:
         raise ValueError("incompatible values, time, window or gap")
-    if mode not in ("past_only", "centered"):
-        raise ValueError("mode must be past_only or centered")
+    if mode != "past_only":
+        raise ValueError("mode must be past_only")
     out = np.full_like(x, np.nan)
     cuts = np.r_[0, np.flatnonzero(np.diff(t) > gap_s) + 1, len(t)]
     for a, b in zip(cuts[:-1], cuts[1:]):
         tt = t[a:b]
-        if mode == "past_only":
-            lo = np.searchsorted(tt, tt - window_s, side="right")
-            hi = np.arange(1, b - a + 1)
-        else:
-            lo = np.searchsorted(tt, tt - window_s / 2, side="left")
-            hi = np.searchsorted(tt, tt + window_s / 2, side="right")
+        lo = np.searchsorted(tt, tt - window_s, side="right")
+        hi = np.arange(1, b - a + 1)
         for j, (left, right) in enumerate(zip(lo, hi)):
             v = x[a + left:a + right]
             count = np.isfinite(v).sum(axis=0)

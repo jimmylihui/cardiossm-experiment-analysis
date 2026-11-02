@@ -8,7 +8,7 @@ One NPZ per pseudonymous patient, and one input directory per calibration condit
 
 | Key | Shape | Meaning |
 |---|---|---|
-| `time_s` | T | Strictly increasing seconds on a common patient timeline |
+| `time_s` | T | Strictly increasing completed-block availability times in seconds |
 | `reference` | T | Reference MAP in mmHg |
 | `test_mask` | T | Boolean test support; calibration and test must be defined externally |
 | `reading_mask` | T | Boolean actual scheduled calibration-reading locations |
@@ -25,13 +25,12 @@ With `score --assemble-offset-hr`, provide `neural_predictions` (T × M) instead
 
 | Key | Shape | Meaning |
 |---|---|---|
-| `smoothed_reference` | T | Protocol-specific smoothed reference MAP |
-| `hr_deviation` | T | Externally prepared HR-derived MAP contribution in mmHg, coefficient fixed before analysis |
+| `hr_bpm` | T | Monitor HR aligned with each completed block |
 | `calibration_mask` | T | Boolean initial-calibration support |
 
-`neural_predictions` are already averaged neural contributions before offset and HR assembly. The package does not infer how they were trained, what input features they use, or whether neural predictions were recorded before or after reading-block updates. Supply and record that information separately. Every assembly input must be finite over the supplied record.
+`neural_predictions` contains unsmoothed 2min neural block means generated before the reading update. The assembly command computes past-only 60min means of the neural stream, reference MAP and HR in the same run, with startup min_periods=1 and >30min gap resets. The HR term is block HR minus its past-only mean, with beta=1. It uses no whole-record neural centering. Both network and filter update a reading only after predicting that block.
 
-The assembly function preserves the historical whole-record neural centering and before-KF-update prediction order. The CLI uses fixed qa shared across models. It does not silently select qa on test outcomes. The generated `OffsetHR` baseline uses an identically zero neural contribution and otherwise identical inputs.
+The `offset_hr` Python API accepts these already computed past-only contributions. The CLI uses fixed qa shared across models; other-patient test-MAE selection is available through `select_qa_other_patients`, with `candidate_interval` for bootstrap reselection. The generated `OffsetHR` baseline sets the neural stream to zero.
 
 ## Output averaging scales
 

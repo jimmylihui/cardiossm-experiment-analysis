@@ -2,7 +2,21 @@
 
 Analysis code and experimental protocol descriptions accompanying **Beyond Calibration: Blood Pressure Tracking With Bed-Based Cardiomechanical Sensing**.
 
-This repository contains reusable analysis functions, a local command-line interface, input schemas, and tests. It contains **no datasets, patient records, saved predictions, model checkpoints, figures, or numerical study results**. CardioSSM was called BCGSSM in earlier experiment code.
+This repository contains analysis functions, model definitions, training routines, command-line interfaces, input schemas, and tests. It contains **no datasets, patient records, saved predictions, model checkpoints, figures, or numerical study results**. CardioSSM was called BCGSSM in earlier experiment code.
+
+## Models and training
+
+The optional `cardiossm_training` package includes:
+
+| Model | Network | Training |
+|---|---|---|
+| CardioSSM | Shared BCGnet waveform encoder, 42-feature projection, two Mamba2 blocks and one MAP head | Full within-run history in pretraining, initial fitting and periodic replay; detached/refreshed older CNN embeddings |
+| BCGnet | Current-window U2 encoder/auxiliary decoder with 42-feature MAP head | Supervised pretraining, initial fitting and periodic replay |
+| BCG-BP-FSNet | ResNet18 with a three-axis ICU tensor and one MAP head | Shared supervised pretraining, initial fitting and periodic replay |
+
+The three models share the training stages and optimizer budgets described in Methods. Offset and HR assembly use past-only averages and predict each reading block before updating the model and filter.
+
+See [training instructions and input schema](docs/training.md) for dependencies, external fold manifests, commands, full training budgets and smoke tests.
 
 ## Analyses included
 
@@ -29,7 +43,7 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-No command downloads data, contacts an experiment server, or launches training. Keep inputs in an external directory or in the ignored `private_inputs/` directory. See [input schemas](docs/input-schema.md).
+Analysis commands do not download data, contact an experiment server, or launch training. Training runs only through the separately invoked optional `cardiossm-train` entry point. Keep inputs in an external directory or in the ignored `private_inputs/` directory. See [input schemas](docs/input-schema.md).
 
 ## Usage
 
@@ -65,15 +79,15 @@ cardiossm-analysis features --input private_inputs/features/ \
   --resamples 499 --seed 0 --output outputs/feature_associations.csv
 ```
 
-The scale command requires native-resolution series. It refuses to generate scales finer than the supplied sampling interval. It computes non-overlapping averages; a centered rolling-average analysis is a separate operation in `temporal.py`.
+The scale command requires native-resolution series. It refuses to generate scales finer than the supplied sampling interval. It computes non-overlapping averages; rolling past-only averages are provided by `temporal.py`.
 
 ## Experimental interpretation
 
-Read [protocols](docs/protocols.md) before assembling a comparison. The descriptive past-only averages and the historical retrospective model evaluation are separate protocols. Centered averaging, whole-record centering, and outcome-based qa selection remain explicit in the retrospective assembly.
+Read [protocols](docs/protocols.md) before assembling a comparison. The network and HR terms use completed-block availability times and past-only 60min averages. The model and filter assimilate each reading after predicting its block.
 
 Report all predefined seeds and calibration intervals. Select neural checkpoints using validation data, preserve the patient split, and pair the same patients across models. A point estimate above a baseline and a paired interval excluding zero are different findings. Averaging patient metrics across seeds is not a prediction ensemble.
 
-This package is a portable analysis refactor. It consumes externally prepared observations or predictions; it does not reproduce private signal extraction, neural training, or every archived experiment invocation.
+This is a portable code refactor. Analysis consumes externally prepared observations or predictions; optional training consumes externally prepared waveform/features and explicit fold/reading manifests. Private signal extraction and every archived experiment invocation are not included.
 
 ## Verification
 
@@ -81,12 +95,13 @@ This package is a portable analysis refactor. It consumes externally prepared ob
 python -m unittest discover -s tests -v
 ```
 
-Tests generate numerical fixtures in memory. No example patient files or study output is checked in. Binary data and common result formats are excluded by `.gitignore`; `scripts/check_repository.py` also checks the committed file list before publication.
+Tests generate numerical fixtures in memory. Training tests require the optional PyTorch dependencies; native CardioSSM forward/backward execution additionally requires Mamba2 and CUDA, and is explicitly skipped when unavailable. No example patient files or study output is checked in. Binary data and common result formats are excluded by `.gitignore`; `scripts/check_repository.py` also checks the committed file list before publication.
 
 ## Repository layout
 
 ```text
 src/cardiossm_analysis/   reusable calculations and CLI
+src/cardiossm_training/   models, history indexing, fitting and replay
 configs/                 protocol reference values
 docs/                    input schemas and experimental definitions
 tests/                   generated numerical fixtures and regression checks

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cardiossm-experiment-analysis"
-version = "0.1.0"
+version = "0.2.0"
 description = "Code and protocols for analyzing cardiomechanical blood-pressure tracking experiments"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "scipy>=1.10", "scikit-learn>=1.3"]
@@ -12,9 +12,11 @@ dependencies = ["numpy>=1.24", "scipy>=1.10", "scikit-learn>=1.3"]
 [project.optional-dependencies]
 plot = ["matplotlib>=3.7"]
 dev = ["pytest>=7"]
+training = ["torch>=2.6", "torchvision>=0.21", "psutil>=5.9"]
 
 [project.scripts]
 cardiossm-analysis = "cardiossm_analysis.cli:main"
+cardiossm-train = "cardiossm_training.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

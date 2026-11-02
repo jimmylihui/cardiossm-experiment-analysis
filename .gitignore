@@ -7,6 +7,11 @@ results/
 artifacts/
 checkpoints/
 predictions/
+runs/
+training_runs/
+*.json
+*.jsonl
+*.lock
 *.csv
 *.tsv
 *.npy
@@ -16,6 +21,9 @@ predictions/
 *.pt
 *.pth
 *.ckpt
+*.safetensors
+*.onnx
+*.tfevents*
 *.h5
 *.hdf5
 *.parquet

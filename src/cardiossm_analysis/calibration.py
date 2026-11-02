@@ -1,19 +1,11 @@
-"""Original retrospective offset + HR assembly, not a prospective filter claim."""
+"""Offset + HR assembly with predictions recorded before reading updates."""
 import numpy as np
 from .temporal import validate_time
 
 
 def offset_hr(time, reference, smoothed_reference, neural, hr_deviation,
               calibration_mask, reading_mask, qa=2., calibration_stride=15):
-    """Return slow estimate and slow+HR, recording prediction BEFORE KF update.
-
-    Neural input is an externally generated, already averaged MAP contribution.
-    It is centered using the WHOLE supplied record, as in the retrospective
-    protocol. Initial calibration uses smoothed MAP with observation variance 4;
-    periodic updates use MAP-HR with initial-calibration residual variance.
-    Setting neural to zero gives the matched no-BCG Offset+HR baseline.
-    This function does not implement neural fitting or its reading-block order.
-    """
+    """Return level and level+HR using supplied past-only block contributions."""
     t = validate_time(time)
     y, ym, u, h = [np.asarray(v, float) for v in (reference, smoothed_reference, neural, hr_deviation)]
     cal, read = np.asarray(calibration_mask, bool), np.asarray(reading_mask, bool)
@@ -27,18 +19,17 @@ def offset_hr(time, reference, smoothed_reference, neural, hr_deviation,
     residual_variance = float(np.var((y - ym - h)[cal]))
     for i in np.flatnonzero(read):
         observations[int(i)] = (float(y[i] - h[i]), residual_variance)
-    centered = u - np.mean(u)
     offset, variance, started = 0., 10000., False
     slow = np.full(len(t), np.nan)
     for i in range(len(t)):
         variance += qa * (0. if i == 0 else t[i] - t[i - 1]) / 3600.
         if started:
-            slow[i] = offset + centered[i]
+            slow[i] = offset + u[i]
         if i in observations:
             value, noise = observations[i]
             denominator = variance + noise
             gain = variance / denominator if denominator > 0 else 0.
-            offset += gain * (value - centered[i] - offset)
+            offset += gain * (value - u[i] - offset)
             variance *= 1. - gain
             started = True
     return slow, slow + h

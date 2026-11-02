@@ -8,6 +8,7 @@ from .calibration import offset_hr
 from .bootstrap import paired_interval
 from .scales import scale_metrics
 from .features import heldout_screen
+from .temporal import rolling_average
 
 
 def write_csv(path, rows):
@@ -34,9 +35,11 @@ def score(args):
             if args.assemble_offset_hr:
                 if "OffsetHR" in names:
                     raise ValueError("OffsetHR is reserved for the generated matched baseline")
-                inputs = [np.zeros(len(t))] + [pred[:, j] for j in range(len(names))]
+                inputs = [np.zeros(len(t))] + [rolling_average(pred[:, j], t) for j in range(len(names))]
                 names = ["OffsetHR"] + names
-                pred = np.column_stack([offset_hr(t, y, z["smoothed_reference"], u, z["hr_deviation"],
+                ym = rolling_average(y, t)
+                h = z['hr_bpm'] - rolling_average(z['hr_bpm'], t)
+                pred = np.column_stack([offset_hr(t, y, ym, u, h,
                     z["calibration_mask"], read, qa=args.qa)[1] for u in inputs])
             for j, name in enumerate(names):
                 row = dict(subject=path.stem, model=name, **patient_metrics(t, y, pred[:, j], test, read,
